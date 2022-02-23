@@ -11,6 +11,7 @@
    [app.common.geom.shapes :as gsh]
    [app.main.refs :as refs]
    [app.main.ui.context :as ctx]
+   [app.main.ui.hooks :as ui-hooks]
    [app.main.ui.measurements :as msr]
    [app.main.ui.shapes.embed :as embed]
    [app.main.ui.shapes.export :as use]
@@ -65,7 +66,9 @@
         ;; DEREFS
         drawing           (mf/deref refs/workspace-drawing)
         options           (mf/deref refs/workspace-page-options)
-        base-objects      (mf/deref refs/workspace-page-objects)
+        focus             (mf/deref refs/workspace-focus-selected)
+        base-objects      (-> (mf/deref refs/workspace-page-objects)
+                              (ui-hooks/with-focus-objects focus))
         modifiers         (mf/deref refs/workspace-modifiers)
         objects-modified  (mf/with-memo [base-objects modifiers]
                             (gsh/merge-modifiers base-objects modifiers))
@@ -169,7 +172,7 @@
     (hooks/setup-viewport-size viewport-ref)
     (hooks/setup-cursor cursor alt? ctrl? space? panning drawing-tool drawing-path? node-editing?)
     (hooks/setup-keyboard alt? ctrl? space?)
-    (hooks/setup-hover-shapes page-id move-stream base-objects transform selected ctrl? hover hover-ids @hover-disabled? zoom)
+    (hooks/setup-hover-shapes page-id move-stream base-objects transform selected ctrl? hover hover-ids @hover-disabled? focus zoom)
     (hooks/setup-viewport-modifiers modifiers base-objects)
     (hooks/setup-shortcuts node-editing? drawing-path?)
     (hooks/setup-active-frames base-objects vbox hover active-frames)
@@ -329,6 +332,7 @@
            :page-id page-id
            :selected selected
            :objects base-objects
+           :focus focus
            :modifiers modifiers}])
 
        (when show-snap-distance?

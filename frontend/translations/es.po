@@ -3557,3 +3557,15 @@ msgstr "Actualizar"
 
 msgid "workspace.viewport.click-to-close-path"
 msgstr "Pulsar para cerrar la ruta"
+
+msgid "workspace.isolation.selection"
+msgstr "Selección"
+
+msgid "workspace.isolation.isolate-mode"
+msgstr "Modo aislado"
+
+msgid "workspace.isolation.isolate-on"
+msgstr "Activar modo aislado"
+
+msgid "workspace.isolation.isolate-off"
+msgstr "Desactivar modo aislado"
