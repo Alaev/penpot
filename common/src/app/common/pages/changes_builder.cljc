@@ -7,6 +7,8 @@
 (ns app.common.pages.changes-builder
   (:require
    [app.common.data :as d]
+   [app.common.geom.shapes :as gsh]
+   [app.common.geom.shapes.bool :as gshb]
    [app.common.pages :as cp]
    [app.common.pages.helpers :as cph]
    [app.common.uuid :as uuid]))
@@ -199,12 +201,12 @@
    (let [objects (-> changes meta ::file-data (get-in [:pages-index uuid/zero :objects]))
 
          generate-operation
-         (fn [changes attr old new ignore-geometry?]
+         (fn [operations attr old new ignore-geometry?]
            (let [old-val (get old attr)
                  new-val (get new attr)]
              (if (= old-val new-val)
-               changes
-               (-> changes
+               operations
+               (-> operations
                    (update :rops conj {:type :set :attr attr :val new-val :ignore-geometry ignore-geometry?})
                    (update :uops conj {:type :set :attr attr :val old-val :ignore-touched true})))))
 
@@ -289,10 +291,57 @@
 (defn resize-parents
   [changes ids]
   (assert-page-id changes)
+  (assert-objects changes)
   (let [page-id (::page-id (meta changes))
-        shapes  (vec ids)]
-        (-> changes
-            (update :redo-changes conj {:type :reg-objects :page-id page-id :shapes shapes})
-            (update :undo-changes conj {:type :reg-objects :page-id page-id :shapes shapes})
-            (apply-changes-local (count ids)))))
+        objects (-> changes meta ::file-data (get-in [:pages-index uuid/zero :objects]))
+
+        xform   (comp
+                  (mapcat #(cons % (cph/get-parent-ids objects %)))
+                  (map (d/getf objects))
+                  (filter #(contains? #{:group :bool} (:type %)))
+                  (distinct))
+        all-parents (sequence xform ids)
+
+        generate-operation
+        (fn [operations attr old new]
+          (let [old-val (get old attr)
+                new-val (get new attr)]
+            (if (= old-val new-val)
+              operations
+              (-> operations
+                  (update :rops conj {:type :set :attr attr :val new-val :ignore-touched true})
+                  (update :uops conj {:type :set :attr attr :val old-val :ignore-touched true})))))
+
+        resize-parent
+        (fn [changes parent]
+          (let [children (->> parent :shapes (map (d/getf objects)))
+                resized-parent (cond
+                                 (empty? children)
+                                 changes
+
+                                 (= (:type parent) :bool)
+                                 (gshb/update-bool-selrect parent children objects)
+
+                                 (= (:type parent) :group)
+                                 (if (:masked-group? parent)
+                                   (gsh/update-mask-selrect parent children)
+                                   (gsh/update-group-selrect parent children)))
+
+                {rops :rops uops :uops}
+                (reduce #(generate-operation %1 %2 parent resized-parent)
+                        {:rops [] :uops []}
+                        (keys parent))
+
+                change {:type :mod-obj
+                        :page-id page-id
+                        :id (:id parent)}]
+
+            (if (seq rops)
+              (-> changes
+                  (update :redo-changes conj (assoc change :operations rops))
+                  (update :undo-changes conj (assoc change :operations uops)))
+              changes)))]
+
+    (-> (reduce resize-parent changes all-parents)
+        (apply-changes-local (count all-parents)))))
 
