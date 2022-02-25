@@ -324,23 +324,29 @@
                          (some :fill-color-gradient (:fills shape)))
         one-fill?    (= (count (:fills shape)) 1)
         no-fills?    (= (count (:fills shape)) 0)
-        last-stroke? (not= position (- (count (:strokes shape)) 1))
+        last-stroke? (= position (- (count (:strokes shape)) 1))
 
         props        (-> (obj/get child "props")
                          (obj/clone))
 
         props (cond
-                (or last-stroke? (and (not url-fill?) no-fills?))
-                (-> props
-                    (obj/without ["fill" "fillOpacity"]))
+                (and last-stroke? url-fill?)
+                ;; TODO: check this zero
+                (obj/set! props "fill" (str "url(#fill-0-" render-id ")"))
 
-                url-fill?
-                (obj/set! props "fill" (str "url(#fill-" render-id ")"))
-
-                (and one-fill? (not url-fill?))
+                (and last-stroke? one-fill?)
                 (obj/merge!
                  props
-                 (attrs/extract-fill-attrs (get-in shape [:fills 0]) render-id 0)))
+                 (attrs/extract-fill-attrs (get-in shape [:fills 0]) render-id 0))
+
+                :else
+                (-> props
+                    (obj/without ["fill" "fillOpacity"])
+                    (obj/set!
+                     "style"
+                     (-> (obj/get props "style")
+                         (obj/set! "fill" "none")
+                         (obj/set! "fillOpacity" "none")))))
 
         props (-> props
                   (add-style

@@ -6,6 +6,7 @@
 
 (ns app.main.ui.workspace.sidebar.options
   (:require
+   [app.common.data :as d]
    [app.main.data.workspace :as udw]
    [app.main.refs :as refs]
    [app.main.store :as st]
@@ -79,6 +80,23 @@
        [:& interactions-menu {:shape (first shapes)}]]]]]])
 
 
+(defn migrate-fills
+  [shape]
+  (let [color-attrs (select-keys shape [:fill-color :fill-opacity :fill-color-ref-id :fill-color-ref-file :fill-color-gradient])
+        ]
+    (cond-> shape
+      (and (nil? (:fills shape)) (d/not-empty? color-attrs))
+      (-> (dissoc :fill-color :fill-opacity :fill-color-ref-id :fill-color-ref-file :fill-color-gradient)
+          (assoc :fills [color-attrs])))))
+
+(defn migrate-strokes
+  [shape]
+  (let [stroke-attrs (select-keys shape [:stroke-style :stroke-alignment :stroke-width :stroke-color :stroke-color-ref-id :stroke-color-ref-file :stroke-opacity :stroke-color-gradient :stroke-cap-start:stroke-cap-end])]
+    (cond-> shape
+      (and (nil? (:strokes shape)) (d/not-empty? stroke-attrs))
+      (-> (dissoc :stroke-style :stroke-alignment :stroke-width :stroke-color :stroke-color-ref-id :stroke-color-ref-file :stroke-opacity :stroke-color-gradient :stroke-cap-start:stroke-cap-end)
+          (assoc :strokes [stroke-attrs])))))
+
 ;; TODO: this need optimizations, selected-objects and
 ;; selected-objects-with-children are derefed always but they only
 ;; need on multiple selection in majority of cases
@@ -91,8 +109,14 @@
         selected             (obj/get props "selected")
         page-id              (mf/use-ctx ctx/current-page-id)
         file-id              (mf/use-ctx ctx/current-file-id)
-        shapes               (mf/deref refs/selected-objects)
-        shapes-with-children (mf/deref refs/selected-shapes-with-children)]
+        ;; For old shapes: moving fill and stroke base attributes to its corresponding array
+        shapes               (->> (mf/deref refs/selected-objects)
+                                  (mapv migrate-fills)
+                                  (mapv migrate-strokes))
+        shapes-with-children (mf/deref refs/selected-shapes-with-children)
+        ;; TODO: review this println
+        _ (println "shapes2" (get-in shapes [0 :fill-color]))]
+
     [:& options-content {:shapes shapes
                          :selected selected
                          :shapes-with-children shapes-with-children

@@ -204,7 +204,7 @@
                           (= :image (:type shape))
                           (> (count (:fills shape)) 1)
                           (some #(some? (:fill-color-gradient %)) (:fills shape)))
-                  (obj/set! styles "fill" (str "url(#fill-0-" render-id ")"))
+                      (obj/set! styles "fill" (str "url(#fill-0-" render-id ")"))
 
                       ;; imported svgs can have fill and fill-opacity attributes
                       (obj/contains? svg-styles "fill")
@@ -213,7 +213,15 @@
                           (obj/set! "fillOpacity" (obj/get svg-styles "fillOpacity")))
 
                       :else
-                      (add-fill styles (d/without-nils (get-in shape [:fills 0])) render-id 0))]
+                      (add-fill styles (d/without-nils (get-in shape [:fills 0])) render-id 0))
+
+         ;; For old shapes: moving fill and stroke base attributes to its corresponding array
+         styles (cond-> styles
+                  (nil? (:fills shape))
+                  (add-fill shape render-id 0)
+
+                  (nil? (:strokes shape))
+                  (add-stroke shape render-id 0))]
 
      (-> props
          (obj/merge! svg-attrs)
