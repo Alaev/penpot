@@ -277,8 +277,9 @@
 (defmethod ig/init-key ::handler
   [_ cfg]
   (let [cfg (initialize cfg)]
-    {:handler (wrap-handler cfg auth-handler)
-     :callback-handler (wrap-handler cfg callback-handler)}))
+    (-> {:handler (wrap-handler cfg auth-handler)
+         :callback-handler (wrap-handler cfg callback-handler)}
+        (with-meta {::providers (delay (:providers @cfg))}))))
 
 (defn- discover-oidc-config
   [{:keys [base-uri] :as opts}]

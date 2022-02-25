@@ -21,7 +21,9 @@
    [app.util.services :as sv]
    [app.util.time :as dt]
    [clojure.spec.alpha :as s]
-   [datoteka.core :as fs]))
+   [datoteka.core :as fs]
+   [promesa.core :as p]
+   [promesa.exec :as px]))
 
 (def thumbnail-options
   {:width 100
@@ -122,48 +124,49 @@
 ;; inverse, soft referential integrity).
 
 (defn create-file-media-object
-  [{:keys [storage pool] :as cfg} {:keys [id file-id is-local name content] :as params}]
+  [{:keys [storage pool executors] :as cfg} {:keys [id file-id is-local name content] :as params}]
   (media/validate-media-type (:content-type content))
-  (let [source-path  (fs/path (:tempfile content))
-        source-mtype (:content-type content)
-        source-info  (media/run {:cmd :info :input {:path source-path :mtype source-mtype}})
-        storage      (media/configure-assets-storage storage)
+  (p/let [source-path  (fs/path (:tempfile content))
+          source-mtype (:content-type content)
+          source-info  (media/run {:cmd :info :input {:path source-path :mtype source-mtype}})
+          storage      (media/configure-assets-storage storage)
 
-        thumb        (when (and (not (svg-image? source-info))
-                                (big-enough-for-thumbnail? source-info))
-                       (media/run (assoc thumbnail-options
-                                         :cmd :generic-thumbnail
-                                         :input {:mtype (:mtype source-info)
-                                                 :path source-path})))
+          thumb        (when (and (not (svg-image? source-info))
+                                  (big-enough-for-thumbnail? source-info))
+                         (px/with-dispatch (:default executors)
+                           (media/run (assoc thumbnail-options
+                                             :cmd :generic-thumbnail
+                                             :input {:mtype (:mtype source-info)
+                                                     :path source-path}))))
 
-        image        (if (= (:mtype source-info) "image/svg+xml")
-                       (let [data (slurp source-path)]
+          image        (if (= (:mtype source-info) "image/svg+xml")
+                         (let [data (slurp source-path)]
+                           (sto/put-object storage
+                                           {:content (sto/content data)
+                                            :content-type (:mtype source-info)
+                                            :reference :file-media-object
+                                            :touched-at (dt/now)}))
                          (sto/put-object storage
-                                         {:content (sto/content data)
+                                         {:content (sto/content source-path)
                                           :content-type (:mtype source-info)
                                           :reference :file-media-object
                                           :touched-at (dt/now)}))
-                       (sto/put-object storage
-                                       {:content (sto/content source-path)
-                                        :content-type (:mtype source-info)
-                                        :reference :file-media-object
-                                        :touched-at (dt/now)}))
 
-        thumb        (when thumb
-                       (sto/put-object storage
-                                       {:content (sto/content (:data thumb) (:size thumb))
-                                        :content-type (:mtype thumb)
-                                        :reference :file-media-object
-                                        :touched-at (dt/now)}))]
-
-    (db/exec-one! pool [sql:create-file-media-object
-                        (or id (uuid/next))
-                        file-id is-local name
-                        (:id image)
-                        (:id thumb)
-                        (:width source-info)
-                        (:height source-info)
-                        source-mtype])))
+          thumb        (when thumb
+                         (sto/put-object storage
+                                         {:content (sto/content (:data thumb) (:size thumb))
+                                          :content-type (:mtype thumb)
+                                          :reference :file-media-object
+                                          :touched-at (dt/now)}))]
+    (px/with-dispatch (:default executors)
+      (db/exec-one! pool [sql:create-file-media-object
+                          (or id (uuid/next))
+                          file-id is-local name
+                          (:id image)
+                          (:id thumb)
+                          (:width source-info)
+                          (:height source-info)
+                          source-mtype]))))
 
 ;; --- Create File Media Object (from URL)
 

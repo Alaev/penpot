@@ -19,9 +19,13 @@
    [app.storage.impl :as impl]
    [app.storage.s3 :as ss3]
    [app.util.time :as dt]
+   [app.worker :as wrk]
    [clojure.spec.alpha :as s]
    [datoteka.core :as fs]
-   [integrant.core :as ig]))
+   [integrant.core :as ig]
+   [promesa.core :as p]
+   [promesa.exec :as px])
+  (:import java.io.InputStream))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Storage Module State
@@ -39,7 +43,7 @@
                    :db ::sdb/backend))))
 
 (defmethod ig/pre-init-spec ::storage [_]
-  (s/keys :req-un [::db/pool ::backends]))
+  (s/keys :req-un [::db/pool ::wrk/executor ::backends]))
 
 (defmethod ig/prep-key ::storage
   [_ {:keys [backends] :as cfg}]
@@ -67,48 +71,48 @@
 (s/def ::storage-object storage-object?)
 (s/def ::storage-content impl/content?)
 
-
 (defn- clone-database-object
   ;; If we in this condition branch, this means we come from the
   ;; clone-object, so we just need to clone it with a new backend.
-  [{:keys [conn backend]} object]
-  (let [id     (uuid/random)
-        mdata  (meta object)
-        result (db/insert! conn :storage-object
-                           {:id id
-                            :size (:size object)
-                            :backend (name backend)
-                            :metadata (db/tjson mdata)
-                            :deleted-at (:expired-at object)
-                            :touched-at (:touched-at object)})]
-    (assoc object
-           :id (:id result)
-           :backend backend
-           :created-at (:created-at result)
-           :touched-at (:touched-at result))))
+  [{:keys [conn backend executor]} object]
+  (px/with-dispatch executor
+    (let [id     (uuid/random)
+          mdata  (meta object)
+          result (db/insert! conn :storage-object
+                             {:id id
+                              :size (:size object)
+                              :backend (name backend)
+                              :metadata (db/tjson mdata)
+                              :deleted-at (:expired-at object)
+                              :touched-at (:touched-at object)})]
+      (assoc object
+             :id (:id result)
+             :backend backend
+             :created-at (:created-at result)
+             :touched-at (:touched-at result)))))
 
 (defn- create-database-object
-  [{:keys [conn backend]} {:keys [content] :as object}]
+  [{:keys [conn backend executor]} {:keys [content] :as object}]
   (us/assert ::storage-content content)
-  (let [id     (uuid/random)
-        mdata  (dissoc object :content :expired-at :touched-at)
+  (px/with-dispatch executor
+    (let [id     (uuid/random)
+          mdata  (dissoc object :content :expired-at :touched-at)
+          result (db/insert! conn :storage-object
+                             {:id id
+                              :size (count content)
+                              :backend (name backend)
+                              :metadata (db/tjson mdata)
+                              :deleted-at (:expired-at object)
+                              :touched-at (:touched-at object)})]
 
-        result (db/insert! conn :storage-object
-                           {:id id
-                            :size (count content)
-                            :backend (name backend)
-                            :metadata (db/tjson mdata)
-                            :deleted-at (:expired-at object)
-                            :touched-at (:touched-at object)})]
-
-    (StorageObject. (:id result)
-                    (:size result)
-                    (:created-at result)
-                    (:deleted-at result)
-                    (:touched-at result)
-                    backend
-                    mdata
-                    nil)))
+      (StorageObject. (:id result)
+                      (:size result)
+                      (:created-at result)
+                      (:deleted-at result)
+                      (:touched-at result)
+                      backend
+                      mdata
+                      nil))))
 
 (def ^:private sql:retrieve-storage-object
   "select * from storage_object where id = ? and (deleted_at is null or deleted_at > now())")
@@ -133,9 +137,10 @@
   "update storage_object set deleted_at=now() where id=?")
 
 (defn- delete-database-object
-  [{:keys [conn] :as storage} id]
-  (let [result (db/exec-one! conn [sql:delete-storage-object id])]
-    (pos? (:next.jdbc/update-count result))))
+  [{:keys [conn executor] :as storage} id]
+  (px/with-dispatch executor
+    (let [result (db/exec-one! conn [sql:delete-storage-object id])]
+      (pos? (:next.jdbc/update-count result)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; API
@@ -161,12 +166,14 @@
 
 (defn put-object
   "Creates a new object with the provided content."
-  [{:keys [pool conn backend] :as storage} {:keys [content] :as params}]
+  [{:keys [pool conn backend executor] :as storage} {:keys [content] :as params}]
   (us/assert ::storage storage)
   (us/assert ::storage-content content)
   (us/assert ::us/keyword backend)
-  (let [storage (assoc storage :conn (or conn pool))
-        object  (create-database-object storage params)]
+  (p/let [storage (assoc storage :conn (or conn pool))
+          ;; hash    (px/submit! executor #(impl/get-hash content))
+          ;; params  (assoc params :hash (str "blake2b:" hash))
+          object  (create-database-object storage params)]
 
     ;; Store the data finally on the underlying storage subsystem.
     (-> (impl/resolve-backend storage backend)
@@ -181,8 +188,9 @@
   (us/assert ::storage storage)
   (us/assert ::storage-object object)
   (us/assert ::us/keyword backend)
-  (let [storage (assoc storage :conn (or conn pool))
-        object* (clone-database-object storage object)]
+
+  (p/let [storage (assoc storage :conn (or conn pool))
+          object* (clone-database-object storage object)]
     (if (= (:backend object) (:backend storage))
       ;; if the source and destination backends are the same, we
       ;; proceed to use the fast path with specific copy
@@ -192,10 +200,12 @@
 
       ;; if the source and destination backends are different, we just
       ;; need to obtain the streams and proceed full copy of the data
-      (with-open [is (-> (impl/resolve-backend storage (:backend object))
-                         (impl/get-object-data object))]
+      (p/let [is (-> (impl/resolve-backend storage (:backend object))
+                     (impl/get-object-data object))]
         (-> (impl/resolve-backend storage (:backend storage))
-            (impl/put-object object* (impl/content is (:size object))))))
+            (impl/put-object object* (impl/content is (:size object)))
+            (p/finally (fn [_ _] (.close ^InputStream is))))))
+
     object*))
 
 (defn get-object-data
@@ -263,10 +273,10 @@
 (s/def ::min-age ::dt/duration)
 
 (defmethod ig/pre-init-spec ::gc-deleted-task [_]
-  (s/keys :req-un [::storage ::db/pool ::min-age]))
+  (s/keys :req-un [::storage ::db/pool ::min-age ::wrk/executor]))
 
 (defmethod ig/init-key ::gc-deleted-task
-  [_ {:keys [pool storage min-age] :as cfg}]
+  [_ {:keys [pool storage min-age executor] :as cfg}]
   (letfn [(retrieve-deleted-objects-chunk [conn cursor]
             (let [min-age (db/interval min-age)
                   rows    (db/exec! conn [sql:retrieve-deleted-objects-chunk min-age cursor])]
@@ -283,8 +293,10 @@
 
           (delete-in-bulk [conn backend ids]
             (let [backend (impl/resolve-backend storage backend)
-                  backend (assoc backend :conn conn)]
-              (impl/del-objects-in-bulk backend ids)))]
+                  backend (assoc backend
+                                 :conn conn
+                                 :executor executor)]
+              @(impl/del-objects-in-bulk backend ids)))]
 
     (fn [_]
       (db/with-atomic [conn pool]

@@ -26,7 +26,7 @@
 
    ;; Default thread pool for IO operations
    [::default :app.worker/executor]
-   {:parallelism (cf/get :default-executor-parallelism 120)
+   {:parallelism (cf/get :default-executor-parallelism 200)
     :prefix :default}
 
    ;; Constrained thread pool. Should only be used from high demand
@@ -37,7 +37,7 @@
 
    ;; Dedicated thread pool for backround tasks execution.
    [::worker :app.worker/executor]
-   {:parallelism (cf/get :worker-executor-parallelism 10)
+   {:parallelism (cf/get :worker-executor-parallelism 20)
     :prefix :worker}
 
    :app.worker/executors-monitor
@@ -68,6 +68,7 @@
    :app.storage/gc-deleted-task
    {:pool     (ig/ref :app.db/pool)
     :storage  (ig/ref :app.storage/storage)
+    :executor (ig/ref [::worker :app.worker/executor])
     :min-age  (dt/duration {:hours 2})}
 
    :app.storage/gc-touched-task
@@ -314,6 +315,8 @@
 
    :app.storage/storage
    {:pool     (ig/ref :app.db/pool)
+    :executor (ig/ref [::default :app.worker/executor])
+
     :backends
     {:assets-s3 (ig/ref [::assets :app.storage.s3/backend])
      :assets-db (ig/ref [::assets :app.storage.db/backend])
@@ -330,12 +333,14 @@
    {:region   (cf/get :storage-fdata-s3-region)
     :bucket   (cf/get :storage-fdata-s3-bucket)
     :endpoint (cf/get :storage-fdata-s3-endpoint)
-    :prefix   (cf/get :storage-fdata-s3-prefix)}
+    :prefix   (cf/get :storage-fdata-s3-prefix)
+    :executor (ig/ref [::default :app.worker/executor])}
 
    [::assets :app.storage.s3/backend]
    {:region   (cf/get :storage-assets-s3-region)
     :endpoint (cf/get :storage-assets-s3-endpoint)
-    :bucket   (cf/get :storage-assets-s3-bucket)}
+    :bucket   (cf/get :storage-assets-s3-bucket)
+    :executor (ig/ref [::default :app.worker/executor])}
 
    [::assets :app.storage.fs/backend]
    {:directory (cf/get :storage-assets-fs-directory)}
