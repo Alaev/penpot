@@ -11,6 +11,7 @@
    [app.common.geom.shapes :as gsh]
    [app.common.logging :as log]
    [app.common.pages :as cp]
+   [app.common.pages.changes-builder :as pcb]
    [app.common.pages.helpers :as cph]
    [app.common.spec :as us]
    [app.common.spec.interactions :as csi]
@@ -280,40 +281,23 @@
               {:keys [frame-id parent-id]} shape]
           [frame-id parent-id (inc index)])))))
 
-(defn add-shape-changes
-  ([page-id objects selected attrs]
-   (add-shape-changes page-id objects selected attrs true))
-  ([page-id objects selected attrs reg-object?]
-   (let [id    (:id attrs)
-         shape (gpr/setup-proportions attrs)
+(defn make-new-shape
+  [attrs objects selected]
+  (let [default-attrs (if (= :frame (:type attrs))
+                        cp/default-frame-attrs
+                        cp/default-shape-attrs)
 
-         default-attrs (if (= :frame (:type shape))
-                         cp/default-frame-attrs
-                         cp/default-shape-attrs)
+        selected-non-frames
+        (into #{} (filter #(not= (:type (get objects %)) :frame) selected))
 
-         shape    (merge default-attrs shape)
+        [frame-id parent-id index]
+        (get-shape-layer-position objects selected-non-frames attrs)]
 
-         not-frame? #(not (= :frame (get-in objects [% :type])))
-         selected (into #{} (filter not-frame?) selected)
-
-         [frame-id parent-id index] (get-shape-layer-position objects selected attrs)
-
-         redo-changes  (cond-> [{:type :add-obj
-                                 :id id
-                                 :page-id page-id
-                                 :frame-id frame-id
-                                 :parent-id parent-id
-                                 :index index
-                                 :obj shape}]
-                         reg-object?
-                         (conj {:type :reg-objects
-                                :page-id page-id
-                                :shapes [id]}))
-         undo-changes  [{:type :del-obj
-                         :page-id page-id
-                         :id id}]]
-
-     [redo-changes undo-changes])))
+    (-> (merge default-attrs attrs)
+        (gpr/setup-proportions)
+        (assoc :frame-id frame-id
+               :parent-id parent-id
+               :index index))))
 
 (defn add-shape
   ([attrs]
@@ -326,26 +310,23 @@
      (watch [it state _]
        (let [page-id  (:current-page-id state)
              objects  (wsh/lookup-page-objects state page-id)
-
-             id (or (:id attrs) (uuid/next))
-             name (-> objects
-                      (retrieve-used-names)
-                      (generate-unique-name (:name attrs)))
-
              selected (wsh/lookup-selected state)
 
-             [rchanges uchanges] (add-shape-changes
-                                  page-id
-                                  objects
-                                  selected
-                                  (-> attrs
-                                      (assoc :id id )
-                                      (assoc :name name)))]
+             id       (or (:id attrs) (uuid/next))
+             name     (-> objects
+                          (retrieve-used-names)
+                          (generate-unique-name (:name attrs)))
+
+             shape (make-new-shape
+                     (assoc attrs :id id :name name)
+                     objects
+                     selected)
+
+             changes  (-> (pcb/empty-changes it page-id)
+                          (pcb/add-obj shape))]
 
          (rx/concat
-          (rx/of (dch/commit-changes {:redo-changes rchanges
-                                      :undo-changes uchanges
-                                      :origin it})
+          (rx/of (dch/commit-changes changes)
                  (when-not no-select?
                    (select-shapes (d/ordered-set id))))
           (when (= :text (:type attrs))
@@ -361,28 +342,15 @@
 
             to-move-shapes (->> (cph/get-immediate-children objects)
                                 (remove cph/frame-shape?)
-                                (mapv :id)
                                 (d/enumerate)
-                                (filterv (comp shapes second)))
+                                (filterv (comp shapes :id second))
+                                (mapv second))
 
-            rchanges [{:type :mov-objects
-                       :parent-id frame-id
-                       :frame-id frame-id
-                       :page-id page-id
-                       :index 0
-                       :shapes (mapv second to-move-shapes)}]
+            changes (-> (pcb/empty-changes it page-id)
+                        (pcb/with-objects objects)
+                        (pcb/change-parent frame-id to-move-shapes 0))]
 
-            uchanges (->> to-move-shapes
-                          (mapv (fn [[index shape-id]]
-                                  {:type :mov-objects
-                                   :parent-id uuid/zero
-                                   :frame-id uuid/zero
-                                   :page-id page-id
-                                   :index index
-                                   :shapes [shape-id]})))]
-        (rx/of (dch/commit-changes {:redo-changes rchanges
-                                    :undo-changes uchanges
-                                    :origin it}))))))
+        (rx/of (dch/commit-changes changes))))))
 
 (s/def ::set-of-uuid
   (s/every ::us/uuid :kind set?))
