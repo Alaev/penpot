@@ -115,7 +115,7 @@
                                   (mapv migrate-strokes))
         shapes-with-children (mf/deref refs/selected-shapes-with-children)
         ;; TODO: review this println
-        _ (println "shapes2" (get-in shapes [0 :fill-color]))]
+        _ (println "shapes2" shapes)]
 
     [:& options-content {:shapes shapes
                          :selected selected

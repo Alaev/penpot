@@ -364,6 +364,8 @@
       (seq (:strokes shape))
       [:*
        (for [[index value] (-> (d/enumerate (:strokes shape)) reverse)]
+         #_(println "kk" index (:points value))
+         ;;_ TODO: why this assoc breaks?, create shape in staging with stroke. move to this branch and remove the stroke
          [:& shape-custom-stroke {:shape (assoc value :points (:points shape)) :index index}
           [:> elem-name (build-stroke-props index shape child value)]])]
 
